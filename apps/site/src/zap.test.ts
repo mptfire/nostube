@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { finalizeEvent, generateSecretKey, getPublicKey, type NostrEvent } from 'nostr-tools'
 import { describe, expect, it } from 'vitest'
 import {
@@ -83,6 +84,39 @@ function receipt({
     },
     signer
   )
+}
+
+
+/** A checksum-valid bolt11 for 1000 sats carrying a real description hash. */
+function invoiceWithDescription(request: NostrEvent): string {
+  const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
+  const sha256HexLocal = (input: string) => createHash('sha256').update(input).digest('hex')
+  const descHash = sha256HexLocal(JSON.stringify(request))
+  const hashBytes = (descHash.match(/../g) ?? []).map(h => parseInt(h, 16))
+  const fields = [13, 0, 32, ...hashBytes]
+  const ts = [0, 0, 0, 0, 0, 0, 1]
+  const bytes = [...ts, ...fields, ...new Array(104).fill(0)]
+  const data: number[] = []
+  let acc = 0, bits = 0
+  for (const b of bytes) {
+    acc = (acc << 8) | b; bits += 8
+    while (bits >= 5) { bits -= 5; data.push((acc >> bits) & 31) }
+  }
+  if (bits > 0) data.push((acc << (5 - bits)) & 31)
+  const hrp = 'lnbc10u'
+  const polymod = (values: number[]) => {
+    const GEN = [0x3b6a57b2, 0x26a08e26, 0x35ea6791, 0x1f0b1e0e, 0x0ee09feb]
+    let chk = 1
+    for (const v of [...hrp.split('').map(c => c.charCodeAt(0) >> 5), 0, ...data, 0, 0, 0, 0, 0, 0]) {
+      const b = chk >> 25
+      chk = ((b & 0x1ffffff) << 5) ^ v
+      for (let i = 0; i < 5; i++) if ((b >> i) & 1) chk ^= GEN[i]
+    }
+    return chk
+  }
+  const pm = polymod([]) ^ 1
+  const checksum = [0, 1, 2, 3, 4, 5].map(i => (pm >> (5 * (5 - i))) & 31)
+  return hrp + '1' + data.concat(checksum).map(v => CHARSET[v]).join('')
 }
 
 describe('lightning address', () => {
@@ -181,6 +215,70 @@ describe('zap receipts', () => {
       nostrPubkey: endpoint.nostrPubkey,
     })
     expect(validZapReceipt(receipt(), { ...target, endpoint: otherLnurl })).toBeNull()
+  })
+
+  it('binds the zap request to the invoice description hash (NIP-57)', async () => {
+    const { sha256Hex, getInvoiceDescriptionHash } = await import('@nostube/core/zap-utils')
+    expect(sha256Hex('abc')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
+
+    const zapRequest = (content: string) =>
+      finalizeEvent(
+        {
+          kind: 9734,
+          created_at: 1,
+          content,
+          tags: [
+            ['p', creator],
+            ['e', videoId],
+            ['a', address],
+            ['amount', '1000000'],
+            ['lnurl', encodeLnurl(LNURL)],
+            ['relays', 'wss://relay.example'],
+          ],
+        },
+        senderKey
+      )
+
+    // A consistent pair: the wallet's invoice embeds sha256 of the request.
+    const request = zapRequest('')
+    const invoice = invoiceWithDescription(request)
+    const good = finalizeEvent(
+      {
+        kind: 9735,
+        created_at: 2,
+        content: '',
+        tags: [
+          ['p', creator],
+          ['e', videoId],
+          ['a', address],
+          ['bolt11', invoice],
+          ['description', JSON.stringify(request)],
+        ],
+      },
+      providerKey
+    )
+    expect(validZapReceipt(good, target)?.sats).toBe(1000)
+
+    // A malicious provider signs an invoice/hash pair that does not cover the
+    // request it claims: the description binding must reject it.
+    const otherRequest = zapRequest('tampered')
+    const otherInvoice = invoiceWithDescription(otherRequest)
+    const mismatched = finalizeEvent(
+      {
+        kind: 9735,
+        created_at: 2,
+        content: '',
+        tags: [
+          ['p', creator],
+          ['e', videoId],
+          ['a', address],
+          ['bolt11', otherInvoice],
+          ['description', JSON.stringify(request)], // request of the OTHER pair
+        ],
+      },
+      providerKey
+    )
+    expect(validZapReceipt(mismatched, target)).toBeNull()
   })
 
   it('counts only zaps of the profile itself for a profile target', () => {

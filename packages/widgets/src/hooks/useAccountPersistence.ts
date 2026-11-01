@@ -13,7 +13,12 @@ import { allowSignerRelays } from '@nostube/core/instance-config'
 
 const STORAGE_KEY_ACCOUNTS = 'nostr:accounts'
 const STORAGE_KEY_ACTIVE = 'nostr:active-account'
-const STORAGE_KEY_SESSION_NSEC_KEYS = 'nostr:session-nsec-keys'
+
+// Raw nsec keys are kept in MEMORY only (module-level map): they survive SPA
+// remounts within a tab but are gone on reload, and nothing an XSS can read
+// off disk persists them. sessionStorage held them in cleartext where any
+// injected script (or an extension with host access) could exfiltrate them.
+const SESSION_NSEC_KEYS = new Map<string, string>()
 
 export type AccountMethod = 'extension' | 'nsec' | 'bunker'
 
@@ -25,47 +30,22 @@ export interface PersistedAccount {
   createdAt: number
 }
 
-function loadSessionNsecKeys(): Record<string, string> {
-  try {
-    const stored = sessionStorage.getItem(STORAGE_KEY_SESSION_NSEC_KEYS)
-    if (!stored) return {}
-
-    const keys = JSON.parse(stored) as Record<string, string>
-    return keys && typeof keys === 'object' && !Array.isArray(keys) ? keys : {}
-  } catch {
-    sessionStorage.removeItem(STORAGE_KEY_SESSION_NSEC_KEYS)
-    return {}
-  }
-}
-
 function saveSessionNsecKey(pubkey: string, nsec: string): void {
-  try {
-    const keys = loadSessionNsecKeys()
-    keys[pubkey] = nsec.trim()
-    sessionStorage.setItem(STORAGE_KEY_SESSION_NSEC_KEYS, JSON.stringify(keys))
-  } catch (error) {
-    console.error('Failed to save session nsec:', error)
-  }
+  SESSION_NSEC_KEYS.set(pubkey, nsec.trim())
 }
 
 function loadSessionNsecKey(pubkey: string): string | undefined {
-  return loadSessionNsecKeys()[pubkey]
+  return SESSION_NSEC_KEYS.get(pubkey)
 }
 
 function removeSessionNsecKey(pubkey: string): void {
-  try {
-    const keys = loadSessionNsecKeys()
-    delete keys[pubkey]
-    sessionStorage.setItem(STORAGE_KEY_SESSION_NSEC_KEYS, JSON.stringify(keys))
-  } catch (error) {
-    console.error('Failed to remove session nsec:', error)
-  }
+  SESSION_NSEC_KEYS.delete(pubkey)
 }
 
 /**
  * Save account data to localStorage.
- * Raw nsec keys are only kept in sessionStorage so SPA remounts can restore
- * the signer without persisting the private key across browser restarts.
+ * Raw nsec keys are only kept in memory so SPA remounts can restore the
+ * signer; they do not survive a reload, and nothing on disk holds them.
  */
 export function saveAccountToStorage(
   account: IAccount,
@@ -363,7 +343,7 @@ export function clearAllAccounts(): void {
   try {
     localStorage.removeItem(STORAGE_KEY_ACCOUNTS)
     localStorage.removeItem(STORAGE_KEY_ACTIVE)
-    sessionStorage.removeItem(STORAGE_KEY_SESSION_NSEC_KEYS)
+    SESSION_NSEC_KEYS.clear()
   } catch (error) {
     console.error('Failed to clear accounts:', error)
   }

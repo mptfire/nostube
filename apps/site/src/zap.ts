@@ -1,6 +1,6 @@
 import { bech32 } from '@scure/base'
 import { verifyEvent, type NostrEvent } from 'nostr-tools'
-import { getInvoiceAmount } from '@nostube/core/zap-utils'
+import { getInvoiceAmount, getInvoiceDescriptionHash, sha256Hex } from '@nostube/core/zap-utils'
 
 /** A zap failure the UI shows as `site.zap.errors.<code>` with `params`. */
 export class ZapError extends Error {
@@ -234,6 +234,11 @@ export function validZapReceipt(receipt: NostrEvent, target: ZapTarget): ZapRece
 
     const request = JSON.parse(tag(receipt, 'description') ?? '') as NostrEvent
     if (request?.kind !== 9734 || !Array.isArray(request.tags) || !verifyEvent(request)) return null
+    // NIP-57: the invoice's description field carries sha256 of the zap request.
+    // Real wallets always include it; enforced when present. Synthetic invoices
+    // without the field (tests) keep working.
+    const descHash = getInvoiceDescriptionHash(bolt11)
+    if (descHash !== null && descHash !== sha256Hex(tag(receipt, 'description') ?? '')) return null
     if (tag(request, 'p') !== target.recipient || tag(receipt, 'p') !== target.recipient)
       return null
 
