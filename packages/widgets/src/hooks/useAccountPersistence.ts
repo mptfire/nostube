@@ -343,7 +343,7 @@ export function clearAllAccounts(): void {
   try {
     localStorage.removeItem(STORAGE_KEY_ACCOUNTS)
     localStorage.removeItem(STORAGE_KEY_ACTIVE)
-    sessionStorage.removeItem(STORAGE_KEY_SESSION_NSEC_KEYS)
+    SESSION_NSEC_KEYS.clear()
   } catch (error) {
     console.error('Failed to clear accounts:', error)
   }
