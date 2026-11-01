@@ -14,7 +14,7 @@ jobs:
 
     steps:
       - name: Join Tailnet as tag:ci
-        uses: tailscale/github-action@v4
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4
         with:
           authkey: ${{ secrets.TS_AUTHKEY }}
 
